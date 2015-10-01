@@ -42,6 +42,8 @@
 #include "dictionary/util/json_to_msgpack.h"
 #include "msgpack/zbuffer.hpp"
 
+#include "compression/predictive_compression.h"
+
 //#define ENABLE_TRACING
 #include "dictionary/util/trace.h"
 
@@ -173,9 +175,11 @@ final {
           values_extern_ = new MemoryMapManager(external_memory_chunk_size,
                                                             temporary_directory_,
                                                            "json_values_filebuffer");
+          compressor_ = new compression::PredictiveCompression("/run/shm/norm.c");
         }
 
         ~JsonValueStore(){
+          delete compressor_;
           delete values_extern_;
           boost::filesystem::remove_all(temporary_directory_);
         }
@@ -264,6 +268,8 @@ final {
        private:
         MemoryMapManager* values_extern_;
 
+        compression::PredictiveCompression* compressor_;
+
         LeastRecentlyUsedGenerationsCache<RawPointer> hash_;
         msgpack::sbuffer msgpack_buffer_;
         char zlib_buffer_[32768];
@@ -277,39 +283,9 @@ final {
         std::string compress_string(const char* data, size_t data_size,
                                     int compressionlevel = Z_BEST_COMPRESSION)
         {
-            z_stream zs;                        // z_stream is zlib's control structure
-            memset(&zs, 0, sizeof(zs));
-
-            if (deflateInit(&zs, compressionlevel) != Z_OK)
-                throw(std::runtime_error("deflateInit failed while compressing."));
-
-            zs.next_in = (Bytef*)data;
-            zs.avail_in = data_size;           // set the z_stream's input
-
-            int ret;
             std::string outstring = " ";
-
-            // retrieve the compressed bytes blockwise
-            do {
-                zs.next_out = reinterpret_cast<Bytef*>(zlib_buffer_);
-                zs.avail_out = sizeof(zlib_buffer_);
-
-                ret = deflate(&zs, Z_FINISH);
-
-                if (outstring.size() - 1  < zs.total_out) {
-                    // append the block to the output string
-                    outstring.append(zlib_buffer_,
-                                     zs.total_out - outstring.size() + 1);
-                }
-            } while (ret == Z_OK);
-
-            deflateEnd(&zs);
-
-            if (ret != Z_STREAM_END) {          // an error occurred that was not EOF
-                std::ostringstream oss;
-                oss << "Exception during zlib compression: (" << ret << ") " << zs.msg;
-                throw(std::runtime_error(oss.str()));
-            }
+            std::string to_compress(data, data_size);
+            outstring += compressor_->Compress(to_compress);
 
             std::string size_prefix;
             util::encodeVarint(outstring.size(), size_prefix);
@@ -347,9 +323,12 @@ final {
               strings_size);
 
           strings_ = (const char*) strings_region_->get_address();
+
+          decompressor_ = new compression::PredictiveCompression("/run/shm/norm.c");
         }
 
         ~JsonValueStoreReader() {
+          delete decompressor_;
           delete strings_region_;
         }
 
@@ -400,6 +379,8 @@ final {
         }
 
        private:
+        compression::PredictiveCompression* decompressor_;
+
         boost::interprocess::mapped_region* strings_region_;
         const char* strings_;
         boost::property_tree::ptree properties_;
@@ -407,43 +388,7 @@ final {
         /** Decompress an STL string using zlib and return the original data. */
         std::string decompress_string(const std::string& str)
         {
-            z_stream zs;                        // z_stream is zlib's control structure
-            memset(&zs, 0, sizeof(zs));
-
-            if (inflateInit(&zs) != Z_OK)
-                throw(std::runtime_error("inflateInit failed while decompressing."));
-
-            zs.next_in = (Bytef*)str.data() + 1;
-            zs.avail_in = str.size() - 1;
-
-            int ret;
-            char outbuffer[32768];
-            std::string outstring;
-
-            // get the decompressed bytes blockwise using repeated calls to inflate
-            do {
-                zs.next_out = reinterpret_cast<Bytef*>(outbuffer);
-                zs.avail_out = sizeof(outbuffer);
-
-                ret = inflate(&zs, 0);
-
-                if (outstring.size() < zs.total_out) {
-                    outstring.append(outbuffer,
-                                     zs.total_out - outstring.size());
-                }
-
-            } while (ret == Z_OK);
-
-            inflateEnd(&zs);
-
-            if (ret != Z_STREAM_END) {          // an error occurred that was not EOF
-                std::ostringstream oss;
-                oss << "Exception during zlib decompression: (" << ret << ") "
-                    << zs.msg;
-                throw(std::runtime_error(oss.str()));
-            }
-
-            return outstring;
+          return decompressor_->Uncompress(str.substr(1));
         }
       };
 
