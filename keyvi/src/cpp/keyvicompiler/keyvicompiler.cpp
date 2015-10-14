@@ -127,6 +127,47 @@ void finalize_compile(CompilerType& compiler, std::string& output,
   }
 }
 
+template <class T>
+inline std::pair<std::string, T> convert_value(
+    const std::string& key, const std::string& value_as_string) {
+  T value;
+  try {
+    value = boost::lexical_cast<T>(value_as_string);
+    return std::pair<std::string, T>(key, value);
+  } catch (boost::bad_lexical_cast const&) {
+    std::cout << "Error: value was not valid: " << key << "\t"
+              << value_as_string << std::endl;
+    return std::pair<std::string, T>();
+  }
+}
+
+template <>
+inline std::pair<std::string, std::string> convert_value<std::string>(
+    const std::string& key, const std::string& value) {
+  return std::pair<std::string, std::string>(key, value);
+}
+
+template<class ValueType, class Compiler>
+void compile_inner(Compiler& compiler,
+                   std::vector<std::string>& input, std::string& output,
+                   size_t partition_size = 0,
+                   const std::string& manifest = "") {
+  std::function<std::pair<std::string, ValueType>(std::string)> parser = [] (std::string line) {
+    size_t tab = line.find('\t');
+
+    if (tab == std::string::npos)
+      return std::pair<std::string, ValueType>();
+    std::string key = line.substr(0, tab);
+    std::string value = line.substr(tab + 1);
+
+    return convert_value<ValueType>(key, value);
+  };
+
+  compile_multiple(compiler, parser, input);
+
+  finalize_compile(compiler, output, partition_size, manifest);
+}
+
 template<class BucketT = uint32_t>
 void compile_integer(std::vector<std::string>& input, std::string& output,
                      size_t memory_limit, size_t partition_size = 0,
@@ -136,48 +177,7 @@ void compile_integer(std::vector<std::string>& input, std::string& output,
       keyvi::dictionary::fsa::internal::SparseArrayPersistence<BucketT>,
       keyvi::dictionary::fsa::internal::IntValueStoreWithInnerWeights> compiler(
       memory_limit, value_store_params);
-
-  std::function<std::pair<std::string, uint32_t>(std::string)> parser = [] (std::string line) {
-    size_t tab = line.find('\t');
-
-    if (tab == std::string::npos)
-      return std::pair<std::string, uint32_t>();
-
-    std::string key = line.substr(0, tab);
-    std::string value_as_string = line.substr(tab + 1);
-    uint32_t value;
-
-    try {
-      value = boost::lexical_cast<uint32_t>(value_as_string);
-    } catch (boost::bad_lexical_cast const&) {
-      std::cout << "Error: value was not valid: " << line << std::endl;
-      return std::pair<std::string, uint32_t>();
-    }
-      return std::pair<std::string, uint32_t>(key, value);
-  };
-  compile_multiple(compiler, parser, input);
-
-  finalize_compile(compiler, output, partition_size, manifest);
-}
-
-template<class Compiler>
-void compile_strings_inner(Compiler& compiler,
-                           std::vector<std::string>& input, std::string& output,
-                           size_t partition_size = 0,
-                           const std::string& manifest = "") {
-  std::function<std::pair<std::string, std::string>(std::string)> parser = [] (std::string line) {
-    size_t tab = line.find('\t');
-    if (tab == std::string::npos)
-      return std::pair<std::string, std::string>();
-    std::string key = line.substr(0, tab);
-    std::string value = line.substr(tab + 1);
-
-    return std::pair<std::string, std::string>(key, value);
-  };
-
-  compile_multiple(compiler, parser, input);
-
-  finalize_compile(compiler, output, partition_size, manifest);
+  compile_inner<uint32_t>(compiler, input, output, partition_size, manifest);
 }
 
 template<class BucketT = uint32_t>
@@ -189,7 +189,7 @@ void compile_strings(std::vector<std::string>& input, std::string& output,
       keyvi::dictionary::fsa::internal::SparseArrayPersistence<BucketT>,
       keyvi::dictionary::fsa::internal::StringValueStore> compiler(
           memory_limit, value_store_params);
-  compile_strings_inner(compiler, input, output, partition_size, manifest);
+  compile_inner<std::string>(compiler, input, output, partition_size, manifest);
 }
 
 template<class BucketT = uint32_t>
@@ -227,7 +227,7 @@ void compile_json(std::vector<std::string>& input, std::string& output,
       keyvi::dictionary::fsa::internal::SparseArrayPersistence<BucketT>,
       keyvi::dictionary::fsa::internal::JsonValueStore> compiler(
           memory_limit, value_store_params);
-  compile_strings_inner(compiler, input, output, partition_size, manifest);
+  compile_inner<std::string>(compiler, input, output, partition_size, manifest);
 }
 
 template<class BucketT = uint32_t>
@@ -239,7 +239,7 @@ void compile_json2(std::vector<std::string>& input, std::string& output,
       keyvi::dictionary::fsa::internal::SparseArrayPersistence<BucketT>,
       keyvi::dictionary::fsa::internal::JsonValueStore2> compiler(
           memory_limit, value_store_params);
-  compile_strings_inner(compiler, input, output, partition_size, manifest);
+  compile_inner<std::string>(compiler, input, output, partition_size, manifest);
 }
 
 /** Extracts the value store parameters. */
